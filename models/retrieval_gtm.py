@@ -1,6 +1,7 @@
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from models.GTM import GTM
 from models.retrieval import RetrievalModule
@@ -8,26 +9,12 @@ from utils.retrieval_bank import RetrievalBank, build_retrieval_mask
 
 
 class RetrievalGTM(GTM):
-    """
-    GTM + explicit historical retrieval.
-    Assumes GTM already has:
-      - image_encoder
-      - text_encoder
-      - dummy_encoder / temporal encoder
-      - static_feature_encoder
-      - gtrend_encoder
-      - decoder
-      - decoder_fc
-      - hidden_dim
-      - output_len
-    """
-
     def __init__(
         self,
         topk: int = 5,
         retrieval_dim: int = 64,
         retrieval_dropout: float = 0.1,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(**kwargs)
 
@@ -42,7 +29,6 @@ class RetrievalGTM(GTM):
 
         self.retrieval_bank: Optional[RetrievalBank] = None
 
-    # ---- helper methods ----
     def encode_static(
         self,
         category,
@@ -67,21 +53,15 @@ class RetrievalGTM(GTM):
         g = E.mean(dim=0)
         return E, g
 
-    def decode_from_embedding(
-        self,
-        z_tilde: torch.Tensor,
-        E: torch.Tensor,
-    ):
-        tgt = z_tilde.unsqueeze(0)                     # [1, B, D]
+    def decode_from_embedding(self, z_tilde: torch.Tensor, E: torch.Tensor):
+        tgt = z_tilde.unsqueeze(0)  # [1, B, D]
         decoder_out, attn_weights = self.decoder(tgt, E)
-        forecast = self.decoder_fc(decoder_out)       # usually [1, B, H]
-        forecast = forecast.squeeze(0)
+        forecast = self.decoder_fc(decoder_out).squeeze(0)  # [B, H]
         return forecast, attn_weights
 
     def set_retrieval_bank(self, bank: RetrievalBank) -> None:
         self.retrieval_bank = bank
 
-    # ---- forward ----
     def forward(
         self,
         category,
@@ -104,7 +84,7 @@ class RetrievalGTM(GTM):
             target_product_id=product_id,
             bank_release_ord=self.retrieval_bank.release_ord,
             bank_product_id=self.retrieval_bank.product_id,
-            horizon=self.output_len,
+            horizon_weeks=self.output_len,
         )
 
         z_tilde, retrieval_aux = self.retrieval_module(
@@ -126,3 +106,57 @@ class RetrievalGTM(GTM):
             "g": g,
         }
         return y_hat, aux
+
+    def training_step(self, train_batch, batch_idx):
+        (
+            item_sales,
+            category,
+            color,
+            fabric,
+            temporal_features,
+            gtrends,
+            images,
+            release_ord,
+            product_id,
+        ) = train_batch
+
+        forecasted_sales, _ = self.forward(
+            category,
+            color,
+            fabric,
+            temporal_features,
+            gtrends,
+            images,
+            release_ord,
+            product_id,
+        )
+
+        loss = F.mse_loss(item_sales, forecasted_sales.squeeze())
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, val_batch, batch_idx):
+        (
+            item_sales,
+            category,
+            color,
+            fabric,
+            temporal_features,
+            gtrends,
+            images,
+            release_ord,
+            product_id,
+        ) = val_batch
+
+        forecasted_sales, _ = self.forward(
+            category,
+            color,
+            fabric,
+            temporal_features,
+            gtrends,
+            images,
+            release_ord,
+            product_id,
+        )
+
+        return item_sales.squeeze(), forecasted_sales.squeeze()
