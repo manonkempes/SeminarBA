@@ -4,21 +4,6 @@ import torch.nn.functional as F
 
 
 class RetrievalModule(nn.Module):
-    """
-    Retrieval module for explicit historical analog retrieval.
-
-    Input:
-        z_i:       [B, D]   multimodal product embedding
-        g_i:       [B, D]   pooled trend embedding
-        bank_z:    [N, D]   product embeddings in memory bank
-        bank_g:    [N, D]   pooled trend embeddings in memory bank
-        bank_y:    [N, H]   observed sales trajectories in memory bank
-        valid_mask:[B, N]   admissibility mask for leakage prevention
-
-    Output:
-        z_tilde:   [B, D]   retrieval-augmented product embedding
-        aux:       dict     debugging info
-    """
     def __init__(
         self,
         prod_dim: int,
@@ -64,34 +49,51 @@ class RetrievalModule(nn.Module):
         bank_y: torch.Tensor,
         valid_mask: torch.Tensor,
     ):
-        # Query/key representations
-        q = self.query_proj(torch.cat([z_i, g_i], dim=-1))          # [B, R]
-        k = self.key_proj(torch.cat([bank_z, bank_g], dim=-1))      # [N, R]
+        """
+        z_i:      [B, D]
+        g_i:      [B, D]
+        bank_z:   [N, D]
+        bank_g:   [N, D]
+        bank_y:   [N, H]
+        valid_mask: [B, N]
+        """
+        q = self.query_proj(torch.cat([z_i, g_i], dim=-1))
+        k = self.key_proj(torch.cat([bank_z, bank_g], dim=-1))
 
         q = F.normalize(q, dim=-1)
         k = F.normalize(k, dim=-1)
 
-        sim = q @ k.transpose(0, 1)                                 # [B, N]
+        sim = q @ k.transpose(0, 1)  # [B, N]
         sim = sim.masked_fill(~valid_mask, -1e9)
 
         k_eff = min(self.topk, sim.size(1))
-        top_sim, top_idx = torch.topk(sim, k=k_eff, dim=1)          # [B, K]
+        top_sim, top_idx = torch.topk(sim, k=k_eff, dim=1)
 
-        retrieved_y = bank_y[top_idx]                               # [B, K, H]
-        proj_y = self.sales_projector(retrieved_y)                  # [B, K, R]
+        retrieved_y = bank_y[top_idx]                  # [B, K, H]
+        proj_y = self.sales_projector(retrieved_y)    # [B, K, R]
 
-        q_rep = q.unsqueeze(1).expand(-1, k_eff, -1)                # [B, K, R]
+        q_rep = q.unsqueeze(1).expand(-1, k_eff, -1)
         alpha_logits = self.compatibility(torch.cat([q_rep, proj_y], dim=-1)).squeeze(-1)
-        alpha_logits = alpha_logits.masked_fill(top_sim < -1e8, -1e9)
-        alpha = torch.softmax(alpha_logits, dim=1)                  # [B, K]
 
-        r_i = torch.sum(alpha.unsqueeze(-1) * proj_y, dim=1)        # [B, R]
-        z_tilde = self.augment(torch.cat([z_i, r_i], dim=-1))       # [B, D]
+        has_valid = valid_mask.any(dim=1)             # [B]
+
+        alpha = torch.zeros_like(alpha_logits)
+        if has_valid.any():
+            alpha_valid = torch.softmax(alpha_logits[has_valid], dim=1)
+            alpha[has_valid] = alpha_valid
+
+        r_i = torch.sum(alpha.unsqueeze(-1) * proj_y, dim=1)  # [B, R]
+
+        z_tilde = z_i.clone()
+        if has_valid.any():
+            z_aug = self.augment(torch.cat([z_i[has_valid], r_i[has_valid]], dim=-1))
+            z_tilde[has_valid] = z_aug
 
         aux = {
             "top_idx": top_idx,
             "top_sim": top_sim,
             "alpha": alpha,
             "retrieved_y": retrieved_y,
+            "has_valid": has_valid,
         }
         return z_tilde, aux
