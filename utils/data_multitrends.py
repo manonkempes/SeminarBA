@@ -80,7 +80,7 @@ class ZeroShotDataset():
 
         # Maak release_ord en product_id VOORDAT release_date wordt gedropt
         release_ord = pd.to_datetime(data["release_date"]).map(pd.Timestamp.toordinal).values
-        product_id = np.arange(len(data))
+        product_id = data["external_code"].astype("category").cat.codes.values
 
         for (idx, row) in tqdm(data.iterrows(), total=len(data), ascii=True):
             cat = row['category']
