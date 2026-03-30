@@ -11,7 +11,7 @@ from tqdm import tqdm
 from models.FCN import FCN
 from models.GTM import GTM
 from models.retrieval_gtm import RetrievalGTM
-from train import build_retrieval_bank
+from utils.retrieval_bank import build_retrieval_bank
 from utils.data_multitrends import ZeroShotDataset
 
 
