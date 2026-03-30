@@ -369,4 +369,4 @@ class GTM(pl.LightningModule):
 
         lr = float("nan")
         if self.trainer is not None and len(self.trainer.optimizers) > 0:
-            lr = self.trainer.optimizers[0
+            lr = self.trainer.optimizers[0]
